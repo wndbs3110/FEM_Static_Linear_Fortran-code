@@ -1,0 +1,350 @@
+!
+! =============================================================================
+!
+! DISP8-3D
+! Computational Systems Design Laboratory(CSDL)
+! by Hyungmin Jun(hjun@jbnu.ac.kr)
+!
+!               s
+!               |
+!           2***|***1
+!           *   |   *
+!           *   ---------->r
+!           *       *
+!           3*******4
+!
+! =============================================================================
+!
+! Copyright 2020 CSDL. All rights reserved.
+!
+! License - GPL version 3
+! This program is free software: you can redistribute it and/or modify it under
+! the terms of the GNU General Public License as published by the Free Software
+! Foundation, either version 3 of the License, or any later version.
+! This program is distributed in the hope that it will be useful, but WITHOUT
+! ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+! FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+! You should have received a copy of the GNU General Public License along with
+! this program. If not, see <http://www.gnu.org/licenses/>.
+!
+! -----------------------------------------------------------------------------
+!
+
+module DISP8
+
+    use Data_Struct
+
+    implicit none
+
+    public Stiffness_3D
+    public Load_3D
+    public Stress_3D
+
+    private Material_Law
+    private Gauss22_Point
+    private Strain_Displacement
+    private dHxy_Matrix
+    private Shape_Function
+    private dHrs_Matrix
+    private Det
+
+contains
+
+! --------------------------------------------------------------------------------
+
+
+! Stiffness matrix (u1, u2, u3, u4, v1, v2, v3, v4)
+function Stiffness_3D(Young, Poisson, node) result(Ke)
+    double precision, intent(in) :: Young, Poisson
+    double precision, intent(in) :: node(nNPE,nDIM)
+
+    double precision :: Ke(nNPE*nDPN, nNPE*nDPN)
+    double precision :: r, s, t, weight        ! Integration point, weight factor
+    double precision :: det_j               ! Determinant of Jacobian
+    double precision :: B(6, nNPE*nDPN)     ! B-matrix (strain-displacement matrix)
+    double precision :: C(6,6)              ! Material matrix (material law)
+    integer :: i, j, k
+
+    ! Material matrix
+    call Material_Law(Young, Poisson, C)
+
+    Ke(:,:) = 0.0d0
+
+    ! Numerical integration
+    do i = 1, nGP
+        do j = 1, nGP
+            do k = 1, nGP
+            ! Gauss points and weight factor
+            call Gauss22_Point(i, j, k, r, s, t, weight)
+
+            ! Strain displacement matrix, B matrix
+            call Strain_Displacement(r, s, t, node, det_j, B)
+
+            ! Gauss integration
+            Ke = Ke + weight *  matmul(matmul(transpose(B), C), B) * det_j
+            end do
+        end do
+    end do
+end function Stiffness_3D
+
+! --------------------------------------------------------------------------------
+
+! Equivalent nodal loads
+function Load_3D(node, q) result(nodal_load)
+    double precision, intent(in) :: node(nNPE, nDIM)    ! Node position
+    double precision, intent(in) :: q(nDIM)             ! Body forces in x- and y-directions
+
+    double precision :: nodal_load(nDPN*nNPE)   ! Element load vector 
+    double precision :: H(nNPE)                 ! Shape functions
+    double precision :: r, s, t, weight            ! Gauss point, weight factor
+    double precision :: Jacob(3,3)              ! Jacobian matrix
+    integer :: i, j, k, l
+
+    nodal_load(:) = 0.0d0
+
+    ! Numerical integration
+    do i = 1, nGP
+        do j = 1, nGP
+            do l = 1, nGP
+            ! Gauss points
+            call Gauss22_Point(i, j, l, r, s, t, weight)
+
+            ! Shape function and Jacobian matrix
+            H = Shape_Function(r, s, t)
+            Jacob = Jacobian(r, s, t, node)
+
+            ! Equivalent nodal load vector
+            do k=1, nNPE
+                nodal_load(k)      = nodal_load(k) + weight * dabs(Det(Jacob)) * H(k) * q(1)
+                nodal_load(k+nNPE) = nodal_load(k+nNPE) + weight * dabs(Det(Jacob)) * H(k) * q(2)
+                nodal_load(k+nNPE*2)= nodal_load(k+nNPE*2) + weight * dabs(Det(Jacob)) * H(k) * q(3)
+            end do
+            end do
+            
+        end do
+    end do
+    end function Load_3D
+
+! --------------------------------------------------------------------------------
+
+! Element stress (Sx, Sy, Sz, Sxy, Syz, Szx)
+function Stress_3D(young, poisson, node, disp) result(stress)
+    double precision, intent(in) :: young, poisson      ! Young's modulus, Possion's ratio
+    double precision, intent(in) :: node(nNPE,nDIM)     ! nodal position of element
+    double precision, intent(in) :: disp(nDPN*nNPE)     ! displacement vector
+
+    double precision :: stress(nNPE,6)      ! Stress (Sx, Sy, Sz, Sxy, Syz, Szx)
+    double precision :: C(6,6), B(6, nDPN*nNPE)
+    double precision :: buf_det
+    double precision :: r, s, t, weight
+    integer :: i, j, k
+
+    ! Material matrix
+    call Material_Law(Young, Poisson, C)
+
+    do i = 1, nGP
+        do j = 1, nGP
+            do k = 1,nGP
+            ! Gauss points where stresses are out
+                call Gauss22_Point(i, j, k, r, s, t, weight)
+
+            ! B-matrix
+                call Strain_Displacement(r, s, t, node, buf_det, B)
+
+            ! Stresses
+                stress((i-1)*4+(j-1)*2+k, :) = matmul(matmul(C,B), disp)
+            end do
+        end do        
+    end do
+end function Stress_3D
+
+! --------------------------------------------------------------------------------
+
+! Material law for 3D stress condition
+subroutine Material_Law(Young, Poisson, C)
+    double precision, intent(in)  :: Young, Poisson     ! Material constants
+    double precision, intent(out) :: C(6,6)             ! Material matrix
+
+    C(:,:) = 0.0d0
+    C(1,1) = Young*Poisson/((1+Poisson)*(1-2*Poisson))+2*Young/(2*(1+Poisson))
+    C(2,2) = C(1,1)
+    C(1,2) = Young*Poisson/((1+Poisson)*(1-2*Poisson))
+    C(2,1) = C(1,2)
+    C(1,3) = C(1,2)
+    C(3,1) = C(1,3)
+    C(2,3) = C(1,2)
+    C(3,2) = C(2,3)
+    C(3,3) = C(1,1)
+    C(4,4) = Young/(2*(1+Poisson))
+    C(5,5) = C(4,4)
+    C(6,6) = C(4,4)
+end subroutine Material_Law
+
+! --------------------------------------------------------------------------------
+
+! Gauss integration point 2 * 2 and weight factor
+subroutine Gauss22_Point(i, j, k, r, s, t, weight)
+    integer, intent(in) :: i, j, k
+    double precision, intent(out) :: r, s, t, weight
+
+    double precision :: GaussPoint(2), w(2)
+    data GaussPoint / -0.577350269d0, 0.577350269d0 /
+    data w          / 1.000000000d0, 1.000000000d0 /
+
+    weight = w(i) * w(j) * w(k)
+
+    r = GaussPoint(i)
+    s = GaussPoint(j)
+    t = GaussPoint(k)
+end subroutine Gauss22_Point
+
+! --------------------------------------------------------------------------------
+
+! B-matrix (strain-displacement matrix)
+subroutine Strain_Displacement(r, s, t, node, det_j, B)
+    double precision, intent(in)  :: r, s, t, node(nNPE,nDIM)
+    double precision, intent(out) :: det_j, B(6, nDPN*nNPE)
+
+    integer:: i
+    double precision :: dHxy(nDIM,nNPE)
+
+    ! calculate dHxy. dHxy(1,:)=dH/dx, dH(2,:)=dHxy/dy
+    call dHxy_Matrix(r, s, t, node, det_j, dHxy)
+
+    ! B-matrix
+    B(:,:) = 0.0d0
+
+    do i=1, nNPE
+        B(1, i)                 = dHxy(1, i)
+        B(2, i+nNPE)		    = dHxy(2, i)
+        B(3, i+2*nNPE)			= dHxy(3, i)
+        B(4, i)	                = dHxy(2, i)
+        B(4, i+nNPE)            = dHxy(1, i)
+        B(5, i+nNPE)            = dHxy(3, i)
+        B(5, i+2*nNPE)          = dHxy(2, i)
+        B(6, i)                 = dHxy(3, i)
+        B(6, i+2*nNPE)          = dHxy(1, i)
+    end do
+end subroutine Strain_Displacement
+
+! --------------------------------------------------------------------------------
+
+! dHxy matirx. dHxy(1,:)=dH/dx, dHxy(2,:)=dH/dy
+subroutine dHxy_Matrix(r, s, t, node, det_j, dHxy)
+    double precision, intent(in)  :: r, s, t, node(nNPE,nDIM)
+    double precision, intent(out) :: det_j, dHxy(nDIM,nNPE) 
+
+    double precision :: buf, dHrs(nDIM,nNPE), Jacob(3,3), InvJacob(3,3)
+
+    ! Derivative of shape function, dH/dr and dH/ds
+    dHrs = dHrs_Matrix(r, s, t)
+
+    ! Jacob = Jacobian Matrix
+    Jacob = Jacobian(r, s, t, node)
+
+    ! Jacob => inverse of jacobian Matrix
+    det_j      = Jacob(1,1) * (Jacob(2,2)*Jacob(3,3)-Jacob(2,3)*Jacob(3,2))&
+                - Jacob(1,2)*(Jacob(2,1)*Jacob(3,3) - Jacob(2,3) * Jacob(3,1))& 
+                + Jacob(1,3)*(Jacob(2,1)*Jacob(3,2)-Jacob(2,2)*Jacob(3,1))
+    InvJacob(1,1) =  (Jacob(2,2)*Jacob(3,3)-Jacob(2,3)*Jacob(3,2))
+    InvJacob(2,1) = -(Jacob(2,1)*Jacob(3,3)-Jacob(3,1)*Jacob(2,3))
+    InvJacob(1,2) = -(Jacob(1,2)*Jacob(3,3)-Jacob(1,3)*Jacob(3,2))
+    InvJacob(2,2) =  (Jacob(1,1)*Jacob(3,3)-Jacob(1,3)*Jacob(3,1))
+    InvJacob(3,1) =  (Jacob(2,1)*Jacob(3,2)-Jacob(2,2)*Jacob(3,1))
+    InvJacob(3,2) = -(Jacob(1,1)*Jacob(3,2)-Jacob(1,2)*Jacob(3,1))
+    InvJacob(1,3) =  (Jacob(1,2)*Jacob(2,3)-Jacob(1,3)*Jacob(2,2))
+    InvJacob(2,3) = -(Jacob(1,1)*Jacob(2,3)-Jacob(1,3)*Jacob(2,1))
+    InvJacob(3,3) =  (Jacob(1,1)*Jacob(2,2)-Jacob(1,2)*Jacob(2,1))
+    InvJacob      = InvJacob / det_j
+ 
+    ! dHxy(1,:)=dH/dx, dHxy(2,:)=dH/dy
+    dHxy = matmul(InvJacob, dHrs)
+end subroutine dHxy_Matrix
+
+! --------------------------------------------------------------------------------
+
+! H matrix, determinant of Jacobian
+function Jacobian(r, s, t, node) result(Jacob)
+    double precision, intent(in) :: r, s, t
+    double precision, intent(in) :: node(nNPE,nDIM)
+
+    double precision :: dHrs(nDIM,nNPE), Jacob(3,3)
+
+    ! Derivative of shape functions, dH/dr and dH/ds
+    dHrs = dHrs_Matrix(r, s, t)
+
+    ! Jacobian matrix
+    Jacob = matmul(dHrs, node)
+end function Jacobian
+
+! --------------------------------------------------------------------------------
+
+! Derivatives of shape functions, dHrs(1,:)=dH/dr and dHrs(2,:)=dH/ds
+function dHrs_Matrix(r, s, t) result (dHrs)
+    double precision, intent(in) :: r, s, t
+    double precision :: dHrs(nDIM,nNPE)
+
+    dHrs(1,1) =  0.125d0 * (1.0d0 + s) * (1.0d0 - t)
+    dHrs(1,2) = -0.125d0 * (1.0d0 + s) * (1.0d0 - t)
+    dHrs(1,3) = -0.125d0 * (1.0d0 - s) * (1.0d0 - t)
+    dHrs(1,4) =  0.125d0 * (1.0d0 - s) * (1.0d0 - t)
+    dHrs(1,5) =  0.125d0 * (1.0d0 + s) * (1.0d0 + t)
+    dHrs(1,6) = -0.125d0 * (1.0d0 + s) * (1.0d0 + t)
+    dHrs(1,7) = -0.125d0 * (1.0d0 - s) * (1.0d0 + t)
+    dHrs(1,8) =  0.125d0 * (1.0d0 - s) * (1.0d0 + t)
+    
+    dHrs(2,1) =  0.125d0 * (1.0d0 + r) * (1.0d0 - t)
+    dHrs(2,2) =  0.125d0 * (1.0d0 - r) * (1.0d0 - t)
+    dHrs(2,3) = -0.125d0 * (1.0d0 - r) * (1.0d0 - t)
+    dHrs(2,4) = -0.125d0 * (1.0d0 + r) * (1.0d0 - t)
+    dHrs(2,5) =  0.125d0 * (1.0d0 + r) * (1.0d0 + t)
+    dHrs(2,6) =  0.125d0 * (1.0d0 - r) * (1.0d0 + t)
+    dHrs(2,7) = -0.125d0 * (1.0d0 - r) * (1.0d0 + t)
+    dHrs(2,8) = -0.125d0 * (1.0d0 + r) * (1.0d0 + t)
+    
+    dHrs(3,1) = -0.125d0 * (1.0d0 + r) * (1.0d0 + s)
+    dHrs(3,2) = -0.125d0 * (1.0d0 - r) * (1.0d0 + s)
+    dHrs(3,3) = -0.125d0 * (1.0d0 - r) * (1.0d0 - s)
+    dHrs(3,4) = -0.125d0 * (1.0d0 + r) * (1.0d0 - s)
+    dHrs(3,5) =  0.125d0 * (1.0d0 + r) * (1.0d0 + s)
+    dHrs(3,6) =  0.125d0 * (1.0d0 - r) * (1.0d0 + s)
+    dHrs(3,7) =  0.125d0 * (1.0d0 - r) * (1.0d0 - s)
+    dHrs(3,8) =  0.125d0 * (1.0d0 + r) * (1.0d0 - s)
+end function dHrs_Matrix
+
+! --------------------------------------------------------------------------------
+
+! Shape functions
+function Shape_Function(r, s, t) result(H)
+    double precision, intent(in) :: r, s, t   ! Natural coordinate
+
+    double precision :: H(nNPE)
+
+    H(1) = 0.125d0 * (1.0d0 + r) * (1.0d0 + s) * (1.0d0 - t)
+    H(2) = 0.125d0 * (1.0d0 - r) * (1.0d0 + s) * (1.0d0 - t)
+    H(3) = 0.125d0 * (1.0d0 - r) * (1.0d0 - s) * (1.0d0 - t)
+    H(4) = 0.125d0 * (1.0d0 + r) * (1.0d0 - s) * (1.0d0 - t)
+    H(5) = 0.125d0 * (1.0d0 + r) * (1.0d0 + s) * (1.0d0 + t)
+    H(6) = 0.125d0 * (1.0d0 - r) * (1.0d0 + s) * (1.0d0 + t)
+    H(7) = 0.125d0 * (1.0d0 - r) * (1.0d0 - s) * (1.0d0 + t)
+    H(8) = 0.125d0 * (1.0d0 + r) * (1.0d0 - s) * (1.0d0 + t)
+    
+end function Shape_Function
+
+! --------------------------------------------------------------------------------
+
+! Determinant of 2 by 2 matrix
+function Det(Jacob) result(det_j)
+    double precision, intent(in) :: Jacob(3,3)
+
+    double precision :: det_j
+
+    ! Determinant
+    det_j      = Jacob(1,1) * (Jacob(2,2)*Jacob(3,3)-Jacob(2,3)*Jacob(3,2))&
+                - Jacob(1,2)*(Jacob(2,1)*Jacob(3,3) - Jacob(2,3) * Jacob(3,1))& 
+                + Jacob(1,3)*(Jacob(2,1)*Jacob(3,2)-Jacob(2,2)*Jacob(3,1))
+end function Det
+
+! --------------------------------------------------------------------------------
+
+end Module DISP8

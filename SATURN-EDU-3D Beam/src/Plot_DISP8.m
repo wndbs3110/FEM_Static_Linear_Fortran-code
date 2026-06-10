@@ -1,0 +1,127 @@
+clear all; clc; close all;
+
+% Open file for post processing, fid is file pointer
+fid = fopen('SATURN_pos.txt','r');
+n = fscanf(fid,'%i',1);
+scalefactor = fscanf(fid,'%g',1);
+
+% Setting the xy ratio of the figure, 1:1
+figure(1)
+set(gca,'DataAspectRatio',[1 1 1])
+
+hc1=colorbar;
+
+
+
+colormap(jet(100));
+hold on
+
+figure(2)
+set(gca,'DataAspectRatio',[1 1 1])
+
+
+hc2=colorbar;
+colormap(jet(100));
+hold on;
+
+
+maxdisp  = 0.0;
+mindisp  = 1.0e+14;
+maxvalue = 0.0;
+minvalue = 1.0e+14;
+
+k=1;
+for j=1:n
+   for i=1:8
+      x(i) = fscanf(fid,'%g',1);
+      y(i) = fscanf(fid,'%g',1);
+      z(i) = fscanf(fid,'%g',1);
+      
+      u(i) = fscanf(fid,'%g',1);
+      v(i) = fscanf(fid,'%g',1);
+      w(i) = fscanf(fid,'%g',1);
+
+      x(i) = x(i) + u(i) * scalefactor;
+      y(i) = y(i) + v(i) * scalefactor;
+      z(i) = z(i) + w(i) * scalefactor;
+      
+      sxx(i) = fscanf(fid,'%g',1);
+      syy(i) = fscanf(fid,'%g',1);
+      szz(i) = fscanf(fid,'%g',1);
+      sxy(i) = fscanf(fid,'%g',1);
+      syz(i) = fscanf(fid,'%g',1);
+      sxz(i) = fscanf(fid,'%g',1);
+      
+      disp(i)= sqrt(u(i).^2+v(i).^2+w(i).^2);
+   end
+
+   for i=1:8
+       svm(i)=sqrt(  ( (sxx(i)-syy(i)).^2+(syy(i)-szz(i)).^2+(szz(i)-sxx(i)).^2  )/2+3*( sxy(i).^2+syz(i).^2+sxz(i).^2 ) );
+       
+   end
+   
+   xx = [x(1) x(2) x(3) x(4) x(5) x(6) x(7) x(8)]';
+   yy = [y(1) y(2) y(3) y(4) y(5) y(6) y(7) y(8)]';
+   zz = [z(1) z(2) z(3) z(4) z(5) z(6) z(7) z(8)]';
+   
+   dd = [disp(1) disp(2) disp(3) disp(4) disp(5) disp(6) disp(7) disp(8)]';
+   dd_matrix(:,k)=dd;
+
+   sv = [svm(1) svm(2) svm(3) svm(4) svm(5) svm(6) svm(7) svm(8)]';
+   sv_matrix(:,k)=sv;
+
+   surf=[1 2 3 4; 5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8]';
+   figure(1)
+   patch(xx(surf), yy(surf), zz(surf), sv(surf));
+   figure(2)
+   patch(xx(surf), yy(surf), zz(surf), dd(surf));
+   
+
+
+    k=k+1;
+end
+
+
+
+maxvalue=max(sv_matrix(:));
+minvalue=min(sv_matrix(:));
+avgvalue=mean(sv_matrix(:));
+
+maxvalue
+minvalue
+avgvalue
+
+maxdisp=max(dd_matrix(:));
+mindisp=min(dd_matrix(:));
+avgdisp=mean(dd_matrix(:));
+
+maxdisp
+mindisp
+avgdisp
+
+figure(1)
+clim([minvalue,maxvalue]);
+hc1.Ticks=linspace(minvalue,maxvalue,10);
+
+hc1.FontSize=18;
+
+pos=hc1.Position;
+hc1.Position=[pos(1),(1-0.5)/2, pos(3), 0.7 ]
+view(3)
+
+
+
+figure(2)
+clim([mindisp,maxdisp]);
+hc2.Ticks=linspace(mindisp,maxdisp,10);
+
+hc2.FontSize=18;
+pos2=hc2.Position;
+hc2.Position=[pos2(1),(1-0.5)/2, pos2(3), 0.7 ];
+
+
+
+view(3)
+
+hold off
+hold off
